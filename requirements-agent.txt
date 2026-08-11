@@ -1,0 +1,5 @@
+# The agent layer. Kept separate so the deterministic pipeline installs and
+# runs with no LLM SDK present at all -- which is what makes `--no-llm` a real
+# fallback rather than a flag that still drags in the whole dependency tree.
+-r requirements.txt
+pydantic-ai

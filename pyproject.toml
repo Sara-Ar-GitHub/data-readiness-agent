@@ -1,0 +1,32 @@
+[project]
+name = "dra"
+version = "0.1.0"
+description = "Agentic data-readiness assessment for SME industrial datasets"
+requires-python = ">=3.11"
+dependencies = ["pandas>=2.0", "numpy>=1.24", "scipy>=1.10", "pydantic>=2.6"]
+
+[project.optional-dependencies]
+agent = ["pydantic-ai>=0.0.30"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+dra = "dra.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dra"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+# Pinned explicitly rather than left to ruff's defaults, which change between
+# releases -- CI must fail for a reason in this list and no other.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "BLE", "RUF"]

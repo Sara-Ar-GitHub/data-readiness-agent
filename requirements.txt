@@ -1,0 +1,7 @@
+# Runtime dependencies for the deterministic pipeline.
+# Mirrors [project.dependencies] in pyproject.toml, which remains the source
+# of truth. Provided for convenience: `pip install -r requirements.txt`.
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+pydantic>=2.6
