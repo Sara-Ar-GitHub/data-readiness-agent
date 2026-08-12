@@ -89,6 +89,19 @@ def derive_findings(
                             "data across sites.",
             ))
 
+        if col.near_key_duplicate_rate and col.near_key_duplicate_rate > 0.001:
+            findings.append(Finding(
+                dimension=Dimension.UNIQUENESS, severity=Severity.MAJOR, columns=[col.name],
+                description=(f"{col.name} is unique across most rows and is therefore being "
+                             f"used as an identifier, but {col.near_key_duplicate_rate:.2%} of "
+                             "its values repeat."),
+                evidence={"near_key_duplicate_rate": col.near_key_duplicate_rate,
+                          "n_unique": col.n_unique},
+                remediation="Repeated identifiers double-count entities in any join or "
+                            "group-by while leaving row-level duplicate checks silent. "
+                            "Establish which system owns the key before aggregating on it.",
+            ))
+
     if profile.duplicate_row_rate > 0.001:
         findings.append(Finding(
             dimension=Dimension.UNIQUENESS, severity=Severity.MAJOR, columns=[],

@@ -19,6 +19,30 @@ _SAFE_FUNCS = {
 }
 
 
+def _absent(
+    df: pd.DataFrame, requested: list[str], name: str, kind: ConstraintKind, rationale: str
+) -> ConstraintCheck | None:
+    """Guard against a constraint proposed on a column that does not exist.
+
+    A model reasoning from column semantics will sometimes assume a tag the
+    export does not contain -- an ISO 10816 vibration channel, say, on a line
+    that never had one. That is a normal and even useful move: the assumption
+    is worth stating. But it must come back as a check that failed for a
+    nameable reason, so the agent can revise and continue. Raising here would
+    abort an assessment mid-run over a guess, and lose every constraint already
+    adjudicated.
+    """
+    missing = [c for c in requested if c not in df.columns]
+    if not missing:
+        return None
+    return ConstraintCheck(
+        name=name, kind=kind, columns=[c for c in requested if c in df.columns],
+        rationale=rationale, holds=False, violation_rate=1.0,
+        evidence={"error": "column(s) not present in dataset", "missing": missing,
+                  "available": [str(c) for c in df.columns]},
+    )
+
+
 def check_range(
     df: pd.DataFrame, column: str, lo: float | None, hi: float | None, rationale: str
 ) -> ConstraintCheck:
@@ -27,6 +51,8 @@ def check_range(
     Distinct from statistical outlier detection: a value outside these bounds
     is not unusual, it is impossible, and therefore an instrumentation fault.
     """
+    if bad := _absent(df, [column], f"range({column})", ConstraintKind.RANGE, rationale):
+        return bad
     s = pd.to_numeric(df[column], errors="coerce").dropna()
     viol = pd.Series(False, index=s.index)
     if lo is not None:
@@ -58,6 +84,8 @@ def check_monotonic(
     Uses Spearman rather than Pearson because the physical relation is
     monotone but rarely linear.
     """
+    if bad := _absent(df, [x, y], f"monotonic({x}->{y})", ConstraintKind.MONOTONIC, rationale):
+        return bad
     sub = df[[x, y]].apply(pd.to_numeric, errors="coerce").dropna()
     if len(sub) < 30:
         return ConstraintCheck(
@@ -90,6 +118,8 @@ def check_conservation(
     localise the faulty meter rather than merely flagging the dataset.
     """
     cols = [*parts, total]
+    if bad := _absent(df, cols, f"conservation({total})", ConstraintKind.CONSERVATION, rationale):
+        return bad
     sub = df[cols].apply(pd.to_numeric, errors="coerce").dropna()
     if not len(sub):
         return ConstraintCheck(
@@ -126,6 +156,9 @@ def check_rate_limit(
     not process events -- an important distinction for an SME deciding
     whether to trust its historian.
     """
+    if bad := _absent(df, [column, timestamp_column], f"rate_limit({column})",
+                      ConstraintKind.RATE_LIMIT, rationale):
+        return bad
     sub = df[[timestamp_column, column]].copy()
     sub[timestamp_column] = pd.to_datetime(sub[timestamp_column], errors="coerce", format="mixed")
     sub[column] = pd.to_numeric(sub[column], errors="coerce")

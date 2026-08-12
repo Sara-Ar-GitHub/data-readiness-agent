@@ -17,7 +17,15 @@ _UNIT_PATTERNS: list[tuple[str, str]] = [
     (r"(^|[_\W])(kw|mw|watt|power|puissance)($|[_\W])", "power"),
     (r"(^|[_\W])(temp|degc|degf|celsius|temperature)($|[_\W])", "temperature"),
     (r"(^|[_\W])(bar|psi|pa|pressure|pression)($|[_\W])", "pressure"),
-    (r"(^|[_\W])(rpm|speed|vitesse|omega)($|[_\W])", "rotational_speed"),
+    # Linear speed is matched before rotational: a bare "speed" on a vehicle tag
+    # is kph, not rpm. Cheap to get right, and getting it wrong is exactly the
+    # unit confusion this whole heuristic exists to surface.
+    (r"(^|[_\W])(kph|kmh|mph|ms|knots)($|[_\W])", "linear_speed"),
+    (r"(^|[_\W])(rpm|omega)($|[_\W])", "rotational_speed"),
+    (r"(^|[_\W])(speed|vitesse)($|[_\W])", "speed_unspecified"),
+    (r"(^|[_\W])(km|mi|miles|metres|meters|distance)($|[_\W])", "distance"),
+    (r"(^|[_\W])(kg|tonnes|lbs|mass|weight|payload)($|[_\W])", "mass"),
+    (r"(^|[_\W])(l|litres|liters|gal|volume)($|[_\W])", "volume"),
     (r"(^|[_\W])(nm|torque|couple)($|[_\W])", "torque"),
     (r"(^|[_\W])(amp|ampere|current|courant)($|[_\W])", "current"),
     (r"(^|[_\W])(volt|voltage|tension)($|[_\W])", "voltage"),
@@ -60,6 +68,36 @@ def _outlier_rate(s: pd.Series) -> float | None:
     if mad == 0:
         return 0.0
     return float(np.mean(np.abs(x - med) / (1.4826 * mad) > 3.0))
+
+
+def _near_key_duplicate_rate(s: pd.Series, n_rows: int) -> float | None:
+    """Duplicate rate for a column that looks like a business key.
+
+    Exact-duplicate-row detection misses the case that actually costs an SME
+    money: a consignment, work-order or batch identifier that repeats while the
+    surrounding measurements differ. The row is not a duplicate, so no row-level
+    check fires -- but the entity it claims to identify has been counted twice,
+    and any join or group-by on that key silently double-counts.
+
+    "Key-like" is decided by cardinality, not by name. A column unique across
+    at least 80% of rows is being used as an identifier whether or not anyone
+    declared it as one, and that threshold does not depend on the column being
+    called `id` -- which matters, because the naming conventions differ in every
+    export this tool will ever see.
+    """
+    # Floats are excluded outright. A continuous measurement is never a business
+    # key, but a frozen transmitter makes one look like a near-unique column with
+    # a few repeats -- which is a stuck-sensor finding, already reported as such,
+    # and would be a false uniqueness finding here.
+    if pd.api.types.is_float_dtype(s) or pd.api.types.is_datetime64_any_dtype(s):
+        return None
+    v = s.dropna()
+    if n_rows < 50 or len(v) < 0.5 * n_rows:
+        return None
+    ratio = v.nunique() / len(v)
+    if ratio < 0.8 or ratio == 1.0:
+        return None
+    return float(v.duplicated(keep=False).mean())
 
 
 def parse_timestamps(s: pd.Series) -> pd.Series:
@@ -138,6 +176,7 @@ def profile_dataset(df: pd.DataFrame, name: str = "dataset") -> DatasetProfile:
                 std=float(s.std()) if numeric and s.notna().any() else None,
                 outlier_rate=_outlier_rate(s) if numeric else None,
                 inferred_unit=_infer_unit(str(col)),
+                near_key_duplicate_rate=_near_key_duplicate_rate(s, len(df)),
             )
         )
 
