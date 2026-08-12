@@ -1,5 +1,3 @@
-[![CI](https://github.com/Sara-Ar-GitHub/data-readiness-agent/actions/workflows/ci.yml/badge.svg)](...)
-
 # Data Readiness Agent
 
 An agentic assessment tool for industrial datasets. It takes a raw export from an SME's historian, MES or SCADA system and returns a data-readiness report: a profile, a set of *physical* constraints tested against the data, an inferred column lineage, a prioritised remediation roadmap, and a feasibility verdict on the proposed modelling use case.
@@ -20,6 +18,22 @@ This is not a stylistic preference. An assessment tool that lets a language mode
 
 The corollary is that the pipeline degrades gracefully. With `--no-llm` the deterministic half runs alone and still produces a complete report — useful for regression testing, and useful when a client will not allow any external API call at all.
 
+### Why this is the explainability story, not a disclaimer about it
+
+Post-hoc explanation of a model-authored number explains how the text was produced, not whether the number is right. Constraining the model so that it never authors a number moves the property from something asserted about the system to something structural in it — and structural claims can be tested.
+
+That test is `tests/test_agent_contract.py`. It drives the agent with a **scripted model** (`pydantic-ai`'s `FunctionModel`), so the agent layer is exercised on every CI run with no API key and no network. The load-bearing case feeds the agent a constraint the data satisfies, phrased as an accusation, and asserts the verdict comes back clean: the adjudication is arithmetic, and the model's framing has no purchase on it. A test that only ran against a live model could not establish this, because a live model's silence on one run is not evidence.
+
+Three properties follow, and each is a test rather than a claim:
+
+| Property | How it is enforced |
+|---|---|
+| **Auditability** — every figure traces to code and rows | statistics only ever leave `src/dra/tools/`; the tool surface is pinned by a test, so adding a tool that returns a model-authored number breaks the build |
+| **Traceability** — every finding carries its physical rationale | `ConstraintCheck.rationale` is required, and asserted non-empty for every adjudicated check |
+| **Robustness** — a wrong hypothesis degrades, never aborts | a constraint proposed on a hallucinated column returns a failed check naming the missing tag, so the agent revises and the assessment continues |
+
+The third matters more than it looks. A model reasoning from column names *will* assume tags that do not exist — an ISO 10816 vibration channel on a line that never had one. That assumption is worth stating and worth recording. What it must not do is raise, abort the run, and discard every constraint already adjudicated.
+
 ## What each layer catches
 
 The demo dataset (`examples/make_demo.py`) is synthetic press-shop data with nine deliberately injected faults, which makes the split measurable rather than rhetorical.
@@ -30,6 +44,19 @@ The demo dataset (`examples/make_demo.py`) is synthetic press-shop data with nin
 | Agent | negative absolute pressure, sub-meter drift breaking conservation, impossible thermal rates of change, algebraic identities between torque, speed and shaft power |
 
 The second row is the interesting one: those faults are invisible to any schema-level or statistical profiler, because detecting them requires knowing what the equipment *is*. A 45 °C jump in ambient temperature is not a statistical outlier — three points in six thousand — but it is physically impossible, and that judgement is what the domain-reasoning layer supplies.
+
+## Two sectors, one assessment layer
+
+A tool validated on one dataset has shown that it works on that dataset. The claim worth making is that the *abstraction* transfers — so there is a second demo in a domain that shares no vocabulary with the first.
+
+`examples/make_demo_logistics.py` is synthetic cold-chain distribution: no torque, no shaft power, different units, different failure modes. It carries its own nine planted faults, and the constraints have the same *shape* as the press shop's while having none of the same names — a reefer body has thermal inertia, pallets per route must reconcile against the vehicle manifest, fuel burned is litres per km times distance, payload cannot be negative.
+
+Nothing in the profiler or the quality rules is told which sector it is looking at. `tests/test_logistics.py` asserts the recovery, and passing it is the falsifiable version of "the tool generalises".
+
+The second sector paid for itself immediately by exposing two defects in the first:
+
+- **Duplicate business keys were invisible.** Row-level duplicate detection misses a consignment ID that repeats while the surrounding measurements differ — the row is not a duplicate, but the entity has been counted twice and every join on that key silently double-counts. Detection is by cardinality, not by column name, since naming conventions differ in every export.
+- **Unit inference read `vehicle_speed_kph` as rpm**, a bare `speed` pattern written when the only speeds in view were rotational. Precisely the confusion the unit hint exists to surface, committed by the hint itself.
 
 ## Performance
 
@@ -58,14 +85,19 @@ pip install -r requirements-agent.txt    # add the agent layer
 pip install -e .                         # install the `dra` entry point
 cp .env.example .env                     # then set a provider
 
-python examples/make_demo.py                      # generate the demo dataset
+python examples/make_demo.py                      # press shop
+python examples/make_demo_logistics.py            # cold-chain distribution
+
 dra examples/line3_press_shop.csv --sector manufacturing -o report.md
 dra examples/line3_press_shop.csv --no-llm        # deterministic only
-pytest                                            # fault-recovery tests
+dra examples/fleet_cold_chain.csv --sector "transport and logistics" --no-llm
+
+pytest                                            # fault recovery, both sectors
 ```
 
-`sample_report.md` is the committed output of the `--no-llm` run above, so the
-shape of the deliverable can be judged without installing anything.
+`sample_report.md` and `sample_report_logistics.md` are the committed outputs of the two `--no-llm` runs above, so the shape of the deliverable can be judged without installing anything.
+
+The full test suite — including the agent layer, which runs against a scripted model — needs no API key and no network. A key is required only to run the agent against a live provider.
 
 Output is written as Markdown and as JSON conforming to the `ReadinessReport` schema in `src/dra/models.py`, so downstream tooling consumes the structured form rather than parsing prose.
 
@@ -83,10 +115,17 @@ src/dra/
                       conservation, rate limit, algebraic identity)
     lineage.py        derived-column and leakage detection
     quality.py        rule-based findings and maturity scoring
-tests/                fault-recovery tests against known injected faults
+tests/
+  test_pipeline.py    fault recovery, press shop
+  test_logistics.py   fault recovery, cold chain — the transfer claim
+  test_agent_contract.py
+                      the agent/tool handoff, driven by a scripted model
 examples/
-  make_demo.py        synthetic press-shop data with nine injected faults
+  make_demo.py        synthetic press-shop data, nine injected faults
+  make_demo_logistics.py
+                      synthetic cold-chain data, nine injected faults
 sample_report.md      committed output of the deterministic run
+sample_report_logistics.md
 .github/workflows/    lint, tests and an end-to-end no-LLM run on 3.11 / 3.12
 ```
 
@@ -98,3 +137,5 @@ sample_report.md      committed output of the deterministic run
 - Two-parent lineage search is restricted to each target's most correlated neighbours, so a pair of individually uncorrelated columns that jointly explain a target can be missed. Single-parent detection is exact.
 - Lineage runs on a systematic subsample of at most 5,000 rows, which could miss a relation that only holds under extreme heteroscedasticity.
 - Constraint proposals depend on informative column names. On fully anonymised exports the agent layer contributes little, and the deterministic layer carries the assessment.
+- The rate-limit check adjudicates on the *fraction* of violating intervals. That is the right rule for transmission glitches and the wrong one for a single catastrophic discontinuity: one odometer reset in 5,000 samples does not move a rate, so it survives in the evidence but not in the verdict. Recovering it properly needs monotonicity-in-time for cumulative counters, which is not yet one of the five constraint kinds. `tests/test_logistics.py` asserts the current behaviour rather than hiding it.
+- Business-key detection is by cardinality, so a genuinely low-cardinality key — a batch code with ten legitimate values — is not treated as a key at all. Composite keys are not detected.
