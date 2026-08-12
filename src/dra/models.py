@@ -55,6 +55,11 @@ class ColumnProfile(BaseModel):
     mean: float | None = None
     std: float | None = None
     outlier_rate: float | None = Field(None, description="Fraction beyond 3x MAD.")
+    near_key_duplicate_rate: float | None = Field(
+        None,
+        description="For a column unique enough to be a business key, the fraction of "
+                    "rows whose value is not unique. None if the column is not key-like.",
+    )
     inferred_unit: str | None = Field(
         None, description="Guessed from the column name only. Never trusted, only flagged."
     )

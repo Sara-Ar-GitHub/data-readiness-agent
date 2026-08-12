@@ -13,12 +13,14 @@ also means the pipeline degrades gracefully: with no model configured, the
 deterministic half still produces a complete readiness report.
 """
 
-from __future__ import annotations
-
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import pandas as pd
+
+if TYPE_CHECKING:  # pragma: no cover
+    from pydantic_ai.models import Model
 
 from dra.models import (
     ConstraintCheck,
@@ -66,9 +68,22 @@ class AgentDeps:
     checks: list[ConstraintCheck]
 
 
-def build_agent(model: str | None = None):
-    """Construct the PydanticAI agent. Imported lazily so the deterministic
-    pipeline has no hard dependency on any LLM SDK."""
+def build_agent(model: "str | Model | None" = None):
+    """Construct the PydanticAI agent. pydantic_ai is imported lazily so the
+    deterministic pipeline has no hard dependency on any LLM SDK.
+
+    `model` accepts a provider string or an already-constructed pydantic-ai
+    Model. The latter is what lets the agent layer be tested against a scripted
+    model with no API key present -- construction must not reach for a
+    credential before the caller has had a chance to supply a substitute.
+
+    Note the deliberate absence of `from __future__ import annotations` in this
+    module. The tool signatures below are read at registration time by
+    `typing.get_type_hints`, which resolves names against *module* globals --
+    and `RunContext` is imported inside this function, so with postponed
+    annotations it is not there to be found. Evaluating the annotations eagerly
+    resolves them in this local scope instead, which is where they are written.
+    """
     from pydantic_ai import Agent, RunContext
 
     model = model or os.getenv("DRA_MODEL", "anthropic:claude-sonnet-4-6")
